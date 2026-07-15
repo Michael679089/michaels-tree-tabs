@@ -1,8 +1,11 @@
+console.log("===\nrunning sidebar.js\n===");
+
 let $ = document.getElementById.bind(document);
 let window_id = null;
 let sidebar = $("tabs");
 let level = { };
 let expand = { };
+let container_colors = [{ }];
 
 function tab_set_expand(tab, expanded)
 {
@@ -143,7 +146,16 @@ function event_tab_drop(event)
 	browser.tabs.move(parseInt(tab_moved.id, 10), { index: new_index });
 }
 
-function div_tab_insert(tab, lvl = 0, expanded = true, tab_after = null, created = false)
+function getRandomColor() {
+	const letters = '0123456789ABCDEF';
+	let color = '#';
+	for (let i = 0; i < 6; i++) {
+		color += letters[Math.floor(Math.random() * 16)];
+	}
+	return color;
+}
+
+function div_tab_insert(tab, lvl = 0, expanded = true, tab_after = null, created = false) // Everytime a new tab is created
 {
 	expand[tab.id] = expanded;
 	let prev = tab_after != null ? tab_after.previousSibling : sidebar.lastChild;
@@ -159,6 +171,33 @@ function div_tab_insert(tab, lvl = 0, expanded = true, tab_after = null, created
 	div.ondragstart = event_tab_dragstart;
 	div.ondragover = event_tab_dragover;
 	div.ondragleave = event_tab_dragleave;
+
+	// Testing start
+	// After line 165
+	let container = tab.cookieStoreId || "";
+	let containerDiv = document.createElement("div");
+	containerDiv.className = "container-thing";
+	containerDiv.textContent = container;
+	div.appendChild(containerDiv);
+	// Testing end
+
+
+	if (String(container) != "firefox-default") {
+		console.log("container is not default, adding color");		
+		if (container_colors.findIndex(c => c.container === container) !== -1) {
+			let existingColor = container_colors.find(c => c.container === container).color;
+			console.log("existing color for container", container, "is", existingColor);
+			div.style.borderLeft = "4px solid " + existingColor;
+		}
+		else {
+			let newColor = getRandomColor();
+			container_colors.push({ container: container, color: newColor });
+			div.style.borderLeft = "4px solid " + newColor;
+		}
+	}
+	//console.log("Inserting tab", tab.id, "at level", lvl, "expanded:", expanded, "container:", container);
+
+
 	div.ondrop = event_tab_drop;
 	div.classList.add("tab", "level-" + level[tab.id]);
 	div.classList.toggle("active", tab.active);
