@@ -179,3 +179,7 @@ body
 	font-weight: bold;
 	cursor: pointer;
 }
+
+.tab.selected {
+    background: #cce6ff !important;
+}

@@ -6,6 +6,10 @@ let sidebar = $("tabs");
 let level = { };
 let expand = { };
 let container_colors = [{ }];
+let lastSelectedTabId = null;
+let selectedTabIds = new Set();
+let draggedTabIds = []; // Global tracker to safely manage multi-drag sessions across events
+
 
 function tab_set_expand(tab, expanded)
 {
@@ -74,28 +78,63 @@ function tab_move(tab_moved, tab_drop, position)
 	
 	tab_promote_first_child(tab_moved);
 	if (tab_drop) {
-    let newLevel = level[tab_drop.id] + (position == "inside" ? 1 : 0);
-    newLevel = Math.max(0, Math.min(10, newLevel));
-    tab_set_level(tab_moved, newLevel);
-} else {
-    tab_set_level(tab_moved, 0);
-}
+		let newLevel = level[tab_drop.id] + (position == "inside" ? 1 : 0);
+		newLevel = Math.max(0, Math.min(10, newLevel));
+		tab_set_level(tab_moved, newLevel);
+	} else {
+		tab_set_level(tab_moved, 0);
+	}
 	sidebar.insertBefore(tab_moved, position == "before" ? tab : tab.nextSibling);
 	tab_show(tab_moved);
 }
 
-function event_tab_click(event)
-{
-	let tab_id = parseInt(event.currentTarget.id, 10);
-	
-	if (event.target.classList.contains("close"))
-		browser.tabs.remove(tab_id);
-	else if (event.target.classList.contains("audio"))
-		browser.tabs.update(tab_id, { muted: event.target.src.endsWith("audible.svg") });
-	else if (event.target.classList.contains("favicon"))
-		tab_set_expand(event.currentTarget, !expand[tab_id]);
-	else
-		browser.tabs.update(tab_id, { active: true });
+function event_tab_click(event) {
+    let tab_id = parseInt(event.currentTarget.id, 10);
+
+    if (event.shiftKey && lastSelectedTabId !== null) {
+        // Multi-select range
+        let tabs = Array.from(sidebar.children);
+        let start = tabs.findIndex(t => parseInt(t.id, 10) === lastSelectedTabId);
+        let end = tabs.findIndex(t => parseInt(t.id, 10) === tab_id);
+        if (start > -1 && end > -1) {
+            let [from, to] = start < end ? [start, end] : [end, start];
+            for (let i = from; i <= to; i++) {
+                tabs[i].classList.add("selected");
+                selectedTabIds.add(parseInt(tabs[i].id, 10));
+            }
+        }
+    } else if (event.ctrlKey || event.metaKey) {
+        // Toggle selection
+        event.currentTarget.classList.toggle("selected");
+        if (selectedTabIds.has(tab_id)) {
+            selectedTabIds.delete(tab_id);
+        } else {
+            selectedTabIds.add(tab_id);
+        }
+        lastSelectedTabId = tab_id;
+    } else {
+        // Single select
+        sidebar.querySelectorAll(".selected").forEach(t => t.classList.remove("selected"));
+        selectedTabIds.clear();
+        event.currentTarget.classList.add("selected");
+        selectedTabIds.add(tab_id);
+        lastSelectedTabId = tab_id;
+    }
+
+    // Existing logic for close, audio, favicon, etc...
+    if (event.target.classList.contains("close")) {
+		let toClose = selectedTabIds.has(tab_id)
+			? Array.from(selectedTabIds)
+			: [tab_id];
+		toClose.forEach(id => browser.tabs.remove(id));
+		return;
+	}
+    else if (event.target.classList.contains("audio"))
+        browser.tabs.update(tab_id, { muted: event.target.src.endsWith("audible.svg") });
+    else if (event.target.classList.contains("favicon"))
+        tab_set_expand(event.currentTarget, !expand[tab_id]);
+    else
+        browser.tabs.update(tab_id, { active: true });
 }
 
 function event_tab_contextmenu(event)
@@ -107,17 +146,22 @@ function event_tab_contextmenu(event)
 	browser.menus.overrideContext({ context: "tab", tabId: parseInt(tab.id, 10) });
 }
 
-function event_tab_dragstart(event)
-{
-	event.dataTransfer.setData("id", event.target.id);
+function event_tab_dragstart(event) {
+    let tab_id = parseInt(event.target.id, 10);
+    let dragIds = selectedTabIds.has(tab_id)
+        ? Array.from(selectedTabIds)
+        : [tab_id];
+    draggedTabIds = dragIds;
+    event.dataTransfer.setData("ids", JSON.stringify(dragIds));
 }
 
 function event_tab_dragover(event)
 {
 	let tab = event.currentTarget;
-	let tab_moved = $(event.dataTransfer.getData("id") || null);
 	let pinned = tab.classList.contains("pinned");
-	if (tab_moved != null && tab != tab_moved && pinned == tab_moved.classList.contains("pinned"))
+	
+	// Prevent dragging onto oneself or any of the elements inside the dragged subset
+	if (draggedTabIds.length > 0 && !draggedTabIds.includes(parseInt(tab.id, 10)))
 	{
 		event.preventDefault();
 		
@@ -133,17 +177,55 @@ function event_tab_dragleave(event)
 	delete event.currentTarget.dataset.drop;
 }
 
-function event_tab_drop(event)
-{
-	event.preventDefault();
-	
-	let tab = event.currentTarget;
-	let tab_moved = $(event.dataTransfer.getData("id"));
-	tab_move(tab_moved, tab, tab.dataset.drop);
-	delete tab.dataset.drop;
-	
-	let new_index = Array.prototype.indexOf.call(sidebar.children, tab_moved);
-	browser.tabs.move(parseInt(tab_moved.id, 10), { index: new_index });
+function event_tab_drop(event) {
+    event.preventDefault();
+    let tab_drop = event.currentTarget;
+    let position = tab_drop.dataset.drop;
+    delete tab_drop.dataset.drop;
+
+    if (draggedTabIds.length === 0) return;
+
+    // Get DOM elements for the dragged tabs and sort them by current order in DOM
+    let sidebarTabs = Array.from(sidebar.children);
+    let tabElements = draggedTabIds
+        .map(id => $(id))
+        .filter(el => el !== null)
+        .sort((a, b) => sidebarTabs.indexOf(a) - sidebarTabs.indexOf(b));
+
+    if (tabElements.length === 0) return;
+
+    // Promote remaining children of dragged tabs before moving them
+    tabElements.forEach(tabEl => tab_promote_first_child(tabEl));
+
+    // Determine base target level and calculate hierarchical difference shift
+    let baseNewLevel = level[tab_drop.id] + (position === "inside" ? 1 : 0);
+    baseNewLevel = Math.max(0, Math.min(10, baseNewLevel));
+    let levelShiftDelta = baseNewLevel - level[tabElements[0].id];
+
+    // Find the initial insertion point
+    let insertRef = position === "before" ? tab_drop : tab_drop.nextSibling;
+    if (position === "after" && !expand[tab_drop.id]) {
+        while (insertRef != null && level[insertRef.id] > level[tab_drop.id]) {
+            insertRef = insertRef.nextSibling;
+        }
+    }
+
+    // Insert each element sequentially and update positioning + tab hierarchy
+    tabElements.forEach(tabEl => {
+        let newLvl = Math.max(0, Math.min(10, level[tabEl.id] + levelShiftDelta));
+        tab_set_level(tabEl, newLvl);
+        sidebar.insertBefore(tabEl, insertRef);
+        tab_show(tabEl);
+
+        let new_index = Array.prototype.indexOf.call(sidebar.children, tabEl);
+        browser.tabs.move(parseInt(tabEl.id, 10), { index: new_index });
+    });
+
+    draggedTabIds = [];
+}
+
+function event_tab_dragend(event) {
+    draggedTabIds = [];
 }
 
 const colorBlindSafePalette = [
@@ -173,6 +255,7 @@ function div_tab_insert(tab, lvl = 0, expanded = true, tab_after = null, created
 	div.ondragstart = event_tab_dragstart;
 	div.ondragover = event_tab_dragover;
 	div.ondragleave = event_tab_dragleave;
+	div.ondragend = event_tab_dragend;
 
 	// Testing start
 	// After line 165
@@ -197,7 +280,6 @@ function div_tab_insert(tab, lvl = 0, expanded = true, tab_after = null, created
 			div.style.borderLeft = "4px solid " + newColor;
 		}
 	}
-	//console.log("Inserting tab", tab.id, "at level", lvl, "expanded:", expanded, "container:", container);
 
 
 	div.ondrop = event_tab_drop;
