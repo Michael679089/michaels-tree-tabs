@@ -23,7 +23,7 @@ function tab_set_level(tab, lvl)
 	let old_level = level[tab.id];
 	do
 	{
-		let new_level = Math.min(5, level[tab.id] + lvl - old_level);
+		let new_level = Math.max(0, Math.min(10, level[tab.id] + lvl - old_level));
 		tab.classList.replace("level-" + level[tab.id], "level-" + new_level);
 		level[tab.id] = new_level;
 		browser.sessions.setTabValue(parseInt(tab.id, 10), "level", level[tab.id]);
@@ -70,7 +70,13 @@ function tab_move(tab_moved, tab_drop, position)
 			tab = tab.nextSibling;
 	
 	tab_promote_first_child(tab_moved);
-	tab_set_level(tab_moved, tab_drop ? level[tab_drop.id] + (position == "inside") : 0);
+	if (tab_drop) {
+    let newLevel = level[tab_drop.id] + (position == "inside" ? 1 : 0);
+    newLevel = Math.max(0, Math.min(10, newLevel));
+    tab_set_level(tab_moved, newLevel);
+} else {
+    tab_set_level(tab_moved, 0);
+}
 	sidebar.insertBefore(tab_moved, position == "before" ? tab : tab.nextSibling);
 	tab_show(tab_moved);
 }
@@ -141,7 +147,7 @@ function div_tab_insert(tab, lvl = 0, expanded = true, tab_after = null, created
 {
 	expand[tab.id] = expanded;
 	let prev = tab_after != null ? tab_after.previousSibling : sidebar.lastChild;
-	level[tab.id] = Math.min(5, lvl, prev != null && !prev.classList.contains("pinned") ? level[prev.id] + 1 : 0);
+	level[tab.id] = Math.max(0, Math.min(10, lvl));
 	if (level[tab.id] != lvl || (created && level[tab.id] > 0))
 		browser.sessions.setTabValue(tab.id, "level", level[tab.id]);
 	
@@ -169,7 +175,7 @@ function handler_created(tab)
 		return;
 	
 	let tab_after = sidebar.children[tab.index];
-	let lvl = level[tab.openerTabId] + 1 || (tab_after ? level[tab_after.id] : 0);
+	let lvl = (typeof level[tab.openerTabId] === 'number' ? Math.min(10, level[tab.openerTabId] + 1) : (tab_after ? level[tab_after.id] : 0));
 	let div = div_tab_insert(tab, lvl, true, tab_after, true);
 	tab_show(div);
 	
@@ -274,5 +280,24 @@ browser.tabs.query({ currentWindow: true }).then(async tabs => {
 	for (let tab of sidebar.children)
 		if (!expand[tab.id] && (tab.nextSibling == null || level[tab.id] >= level[tab.nextSibling.id]))
 			tab_set_expand(tab, true);
+
+    // Show notification about last session
+    try {
+        const result = await browser.storage.local.get(["sessionSaverTree", "sessionSaverTabCount"]);
+        const tree = result.sessionSaverTree || [];
+        const tabCount = tree.length;
+        let maxLevel = 0;
+        for (let node of tree) {
+            if (typeof node.level === 'number' && node.level > maxLevel) maxLevel = node.level;
+        }
+        if (tabCount > 0 && browser.notifications) {
+            browser.notifications.create({
+                "type": "basic",
+                "iconUrl": browser.runtime.getURL("icon.svg"),
+                "title": "Session Restored",
+                "message": `Restored ${tabCount} tabs. Max indent level: ${maxLevel}`
+            });
+        }
+    } catch (e) {}
 });
 document.oncontextmenu = event => { event.preventDefault(); };
