@@ -146,12 +146,14 @@ function event_tab_drop(event)
 	browser.tabs.move(parseInt(tab_moved.id, 10), { index: new_index });
 }
 
-function getRandomColor() {
-	const letters = '0123456789ABCDEF';
-	let color = '#';
-	for (let i = 0; i < 6; i++) {
-		color += letters[Math.floor(Math.random() * 16)];
-	}
+const colorBlindSafePalette = [
+  "#E69F00", "#56B4E9", "#F0E442", "#009E73",
+  "#F57CB8", "#0072B2", "#D55E00", "#CC79A7"
+];
+let colorIndex = 0;
+function getNextColor() {
+	const color = colorBlindSafePalette[colorIndex % colorBlindSafePalette.length];
+	colorIndex++;
 	return color;
 }
 
@@ -190,7 +192,7 @@ function div_tab_insert(tab, lvl = 0, expanded = true, tab_after = null, created
 			div.style.borderLeft = "4px solid " + existingColor;
 		}
 		else {
-			let newColor = getRandomColor();
+			let newColor = getNextColor();
 			container_colors.push({ container: container, color: newColor });
 			div.style.borderLeft = "4px solid " + newColor;
 		}
