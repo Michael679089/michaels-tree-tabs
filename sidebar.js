@@ -8,8 +8,8 @@ let expand = { };
 let container_colors = [{ }];
 let lastSelectedTabId = null;
 let selectedTabIds = new Set();
-let draggedTabIds = []; // Global tracker to safely manage multi-drag sessions across events
-
+let draggedTabIds = []; // Global tracker to safely manage multi-drag/subtree drag sessions across events
+let draggedElements = []; // Add this line
 
 function tab_set_expand(tab, expanded)
 {
@@ -121,14 +121,14 @@ function event_tab_click(event) {
         lastSelectedTabId = tab_id;
     }
 
-    // Handlers for click target areas
+    // Existing logic for close, audio, favicon, etc...
     if (event.target.classList.contains("close")) {
-        let toClose = selectedTabIds.has(tab_id)
-            ? Array.from(selectedTabIds)
-            : [tab_id];
-        browser.tabs.remove(toClose);
-        return;
-    }
+		let toClose = selectedTabIds.has(tab_id)
+			? Array.from(selectedTabIds)
+			: [tab_id];
+		toClose.forEach(id => browser.tabs.remove(id));
+		return;
+	}
     else if (event.target.classList.contains("audio"))
         browser.tabs.update(tab_id, { muted: event.target.src.endsWith("audible.svg") });
     else if (event.target.classList.contains("favicon"))
@@ -146,29 +146,69 @@ function event_tab_contextmenu(event)
 	browser.menus.overrideContext({ context: "tab", tabId: parseInt(tab.id, 10) });
 }
 
+// Helper to find all descendants of a given tab element in the tree style tab structure
+function getSubtreeElements(tabEl) {
+    let elements = [tabEl];
+    let parentLevel = level[tabEl.id];
+    let current = tabEl.nextSibling;
+    while (current != null && level[current.id] > parentLevel) {
+        elements.push(current);
+        current = current.nextSibling;
+    }
+    return elements;
+}
+
 function event_tab_dragstart(event) {
     let tab_id = parseInt(event.target.id, 10);
-    let dragIds = selectedTabIds.has(tab_id)
+    let initialDragIds = selectedTabIds.has(tab_id)
         ? Array.from(selectedTabIds)
         : [tab_id];
-    draggedTabIds = dragIds;
-    event.dataTransfer.setData("ids", JSON.stringify(dragIds));
+    
+    // Sort selected drag IDs by their physical order in the DOM
+    let sidebarTabs = Array.from(sidebar.children);
+    let initialDragEls = initialDragIds.map(id => $(id)).filter(el => el !== null)
+        .sort((a, b) => sidebarTabs.indexOf(a) - sidebarTabs.indexOf(b));
+
+    // Compile full subtrees for all dragged tabs (combining parents and children)
+    let allDragEls = [];
+    let seenIds = new Set();
+    for (let tabEl of initialDragEls) {
+        if (seenIds.has(tabEl.id)) continue;
+        let subtree = getSubtreeElements(tabEl);
+        for (let subEl of subtree) {
+            if (!seenIds.has(subEl.id)) {
+                seenIds.add(subEl.id);
+                allDragEls.push(subEl);
+            }
+        }
+    }
+
+    draggedTabIds = allDragEls.map(el => parseInt(el.id, 10));
+    event.dataTransfer.setData("ids", JSON.stringify(draggedTabIds));
+
+	draggedTabIds = dragIds;
 }
 
 function event_tab_dragover(event)
 {
 	let tab = event.currentTarget;
-	let pinned = tab.classList.contains("pinned");
 	
-	// Prevent dragging onto oneself or any of the elements inside the dragged subset
+	// If we are dragging tabs and the target itself is not one of the dragged tabs
 	if (draggedTabIds.length > 0 && !draggedTabIds.includes(parseInt(tab.id, 10)))
 	{
-		event.preventDefault();
+		let pinned = tab.classList.contains("pinned");
+		// Check if all dragged tabs match the pinned status of the hover target
+		let pinnedMatch = draggedTabIds.every(id => $(id).classList.contains("pinned") === pinned);
 		
-		let r = tab.getBoundingClientRect();
-		let x = event.clientX - r.x;
-		let y = event.clientY - r.y;
-		tab.dataset.drop = pinned ? (x < 16 ? "before" : "after") : (y < 6 ? "before" : y > 16 ? "after" : "inside");
+		if (pinnedMatch)
+		{
+			event.preventDefault();
+			
+			let r = tab.getBoundingClientRect();
+			let x = event.clientX - r.x;
+			let y = event.clientY - r.y;
+			tab.dataset.drop = pinned ? (x < 16 ? "before" : "after") : (y < 6 ? "before" : y > 16 ? "after" : "inside");
+		}
 	}
 }
 
@@ -179,49 +219,99 @@ function event_tab_dragleave(event)
 
 function event_tab_drop(event) {
     event.preventDefault();
-    let tab_drop = event.currentTarget;
-    let position = tab_drop.dataset.drop;
-    delete tab_drop.dataset.drop;
+    let tab = event.currentTarget;
+    let position = tab.dataset.drop || "after";
 
-    if (draggedTabIds.length === 0) return;
+    // Grab the IDs from dataTransfer or fall back to the global tracked array
+    let dragIds = [];
+    try {
+        dragIds = JSON.parse(event.dataTransfer.getData("ids") || "[]");
+    } catch(e) {}
+    if (dragIds.length === 0) {
+        dragIds = draggedTabIds;
+    }
 
-    // Get DOM elements for the dragged tabs and sort them by current order in DOM
-    let sidebarTabs = Array.from(sidebar.children);
-    let tabElements = draggedTabIds
-        .map(id => $(id))
-        .filter(el => el !== null)
-        .sort((a, b) => sidebarTabs.indexOf(a) - sidebarTabs.indexOf(b));
+    // Helper function to gather a tab and all of its nested descendant elements
+    function getBranchElements(tabEl) {
+        let branch = [tabEl];
+        let rootLevel = level[tabEl.id];
+        let next = tabEl.nextSibling;
+        while (next != null && level[next.id] > rootLevel) {
+            branch.push(next);
+            next = next.nextSibling;
+        }
+        return branch;
+    }
 
-    if (tabElements.length === 0) return;
+    // Collect all dragged tabs and their sub-trees (branches)
+    let draggedNodesSet = new Set();
+    dragIds.forEach(id => {
+        let el = $(id);
+        if (el) {
+            getBranchElements(el).forEach(node => draggedNodesSet.add(node));
+        }
+    });
 
-    // Promote remaining children of dragged tabs before moving them
-    tabElements.forEach(tabEl => tab_promote_first_child(tabEl));
+    // Convert back to an array and sort them by their current position in the DOM
+    // to preserve their original top-to-bottom layout sequence
+    let sidebarChildren = Array.from(sidebar.children);
+    let allDraggedNodes = Array.from(draggedNodesSet).sort(
+        (a, b) => sidebarChildren.indexOf(a) - sidebarChildren.indexOf(b)
+    );
 
-    // Determine base target level and calculate hierarchical difference shift
-    let baseNewLevel = level[tab_drop.id] + (position === "inside" ? 1 : 0);
-    baseNewLevel = Math.max(0, Math.min(10, baseNewLevel));
-    let levelShiftDelta = baseNewLevel - level[tabElements[0].id];
+    if (allDraggedNodes.length === 0) {
+        delete tab.dataset.drop;
+        draggedTabIds = [];
+        return;
+    }
 
-    // Find the initial insertion point
-    let insertRef = position === "before" ? tab_drop : tab_drop.nextSibling;
-    if (position === "after" && !expand[tab_drop.id]) {
-        while (insertRef != null && level[insertRef.id] > level[tab_drop.id]) {
-            insertRef = insertRef.nextSibling;
+    // Skip past hidden children of the drop target if we are dropping 'after' a collapsed tab
+    let insertReference = tab;
+    if (position === "after" && !expand[tab.id]) {
+        while (insertReference.nextSibling != null && level[insertReference.nextSibling.id] > level[tab.id]) {
+            insertReference = insertReference.nextSibling;
         }
     }
 
-    // Insert each element sequentially and update positioning + tab hierarchy
-    tabElements.forEach(tabEl => {
-        let newLvl = Math.max(0, Math.min(10, level[tabEl.id] + levelShiftDelta));
+    // Calculate the new level for the main "root" being moved
+    let targetLevel = level[tab.id] + (position === "inside" ? 1 : 0);
+    targetLevel = Math.max(0, Math.min(10, targetLevel));
+
+    // Calculate the offset (delta) between where the root was and where it is going
+    let rootNode = allDraggedNodes[0];
+    let delta = targetLevel - level[rootNode.id];
+
+    // Process and move each element in the branch, maintaining their relative offsets
+    allDraggedNodes.forEach(tabEl => {
+        // Shift this tab's level by the parent's delta
+        let newLvl = Math.max(0, Math.min(10, level[tabEl.id] + delta));
         tab_set_level(tabEl, newLvl);
-        sidebar.insertBefore(tabEl, insertRef);
+
+        // Safely move it in the sidebar DOM
+        if (tabEl.parentNode) {
+            tabEl.parentNode.removeChild(tabEl);
+        }
+        
+        let insertBeforeTarget = (position === "before" && insertReference === tab) 
+            ? insertReference 
+            : insertReference.nextSibling;
+            
+        sidebar.insertBefore(tabEl, insertBeforeTarget);
+        
+        // Correct visibility rules and scroll into view
         tab_show(tabEl);
 
-        let new_index = Array.prototype.indexOf.call(sidebar.children, tabEl);
-        browser.tabs.move(parseInt(tabEl.id, 10), { index: new_index });
+        // Slide the insert marker down so the next sibling in the branch lands directly under it
+        insertReference = tabEl;
     });
 
-    draggedTabIds = [];
+    // Synchronize current visual sidebar order with browser session tabs
+    Array.from(sidebar.children).forEach((tabEl, index) => {
+        browser.tabs.move(parseInt(tabEl.id, 10), { index: index });
+    });
+
+    delete tab.dataset.drop;
+    draggedTabIds = []; // Clear global tracking state
 }
 
 function event_tab_dragend(event) {
