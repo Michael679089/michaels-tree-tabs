@@ -121,14 +121,14 @@ function event_tab_click(event) {
         lastSelectedTabId = tab_id;
     }
 
-    // Existing logic for close, audio, favicon, etc...
+    // Handlers for click target areas
     if (event.target.classList.contains("close")) {
-		let toClose = selectedTabIds.has(tab_id)
-			? Array.from(selectedTabIds)
-			: [tab_id];
-		toClose.forEach(id => browser.tabs.remove(id));
-		return;
-	}
+        let toClose = selectedTabIds.has(tab_id)
+            ? Array.from(selectedTabIds)
+            : [tab_id];
+        browser.tabs.remove(toClose);
+        return;
+    }
     else if (event.target.classList.contains("audio"))
         browser.tabs.update(tab_id, { muted: event.target.src.endsWith("audible.svg") });
     else if (event.target.classList.contains("favicon"))
@@ -318,6 +318,17 @@ function handler_removed(tab_id, info)
 	
 	delete level[tab_id];
 	delete expand[tab_id];
+
+	// If the closed tab was part of the multi-selection, 
+	// close all other selected tabs at the same time
+	if (selectedTabIds.has(tab_id)) {
+		selectedTabIds.delete(tab_id);
+		if (selectedTabIds.size > 0) {
+			let toClose = Array.from(selectedTabIds);
+			selectedTabIds.clear(); // Clear local state before triggering removal to prevent recursion
+			browser.tabs.remove(toClose);
+		}
+	}
 }
 
 function handler_attached(tab_id, info)
