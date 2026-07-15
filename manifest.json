@@ -1,0 +1,37 @@
+{
+  "manifest_version": 2,
+  "name": "Vertical Tree Tabs",
+  "version": "1.5.1",
+  "description": "Display your tabs in a sidebar.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "vertical_tree_tabs@example.com"
+    }
+  },
+  "icons": {
+    "48": "icon.svg",
+    "96": "icon.svg"
+  },
+  "permissions": [
+    "tabs",
+    "sessions",
+    "menus",
+    "menus.overrideContext"
+  ],
+  "background": {
+    "scripts": [
+      "background.js"
+    ]
+  },
+  "sidebar_action": {
+    "default_panel": "sidebar.html",
+    "default_icon": "icon.svg"
+  },
+  "commands": {
+    "_execute_sidebar_action": {
+      "suggested_key": {
+        "default": "F1"
+      }
+    }
+  }
+}
