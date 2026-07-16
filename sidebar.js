@@ -375,7 +375,7 @@ function div_tab_insert(tab, lvl = 0, expanded = true, tab_after = null, created
 	div.ondrop = event_tab_drop;
 	div.classList.add("tab", "level-" + level[tab.id]);
 	div.classList.toggle("active", tab.active);
-	div.innerHTML = '<img class="favicon"><div class="title"></div><img class="audio"><div>▶</div><div class="close">×</div>';
+	div.innerHTML = '<img class="favicon"><div class="title"></div><img class="audio"><div>▶</div><div class="close">❌</div>';
 	div.children[3].classList.toggle("hidden", expanded);
 	sidebar.insertBefore(div, tab_after);
 	handler_updated(tab.id, tab, tab);

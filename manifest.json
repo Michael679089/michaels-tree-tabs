@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Vertical Tree Tabs (Michael's Fork)",
-  "version": "1.5.2",
+  "version": "1.5.4",
   "description": "Display your tabs as a tree in a sidebar. This is a fork from this project: https://addons.mozilla.org/en-US/firefox/addon/vertical-tree-tabs/",
   "browser_specific_settings": {
     "gecko": {
