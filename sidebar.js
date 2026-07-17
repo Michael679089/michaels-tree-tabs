@@ -8,8 +8,35 @@ let expand = { };
 let container_colors = [{ }];
 let lastSelectedTabId = null;
 let selectedTabIds = new Set();
-let draggedTabIds = []; // Global tracker to safely manage multi-drag/subtree drag sessions across events
-let draggedElements = []; // Add this line
+let draggedTabIds = []; 
+let draggedElements = []; 
+
+/**
+ * SIDEBERY-STYLE PERSISTENCE DATABASE
+ * Saves the current window's URL-to-Tree mapping.
+ * This runs continuously on changes and writes to your SSD/HDD.
+ */
+async function saveTreeToDatabase() {
+    try {
+        let currentTabs = await browser.tabs.query({ currentWindow: true });
+        let databaseSnapshot = [];
+
+        // Map every open tab by its URL, physical position, and tree parameters
+        for (let tab of currentTabs) {
+            databaseSnapshot.push({
+                url: tab.url,
+                title: tab.title,
+                level: level[tab.id] || 0,
+                expand: expand[tab.id] !== false
+            });
+        }
+        
+        // Write persistently to local storage
+        await browser.storage.local.set({ "sidebery_style_db": databaseSnapshot });
+    } catch (e) {
+        console.error("Failed writing layout to local database:", e);
+    }
+}
 
 function tab_set_expand(tab, expanded)
 {
@@ -19,7 +46,11 @@ function tab_set_expand(tab, expanded)
 	
 	expand[tab.id] = expanded || Object.keys(hidden).length == 1;
 	tab.children[3].classList.toggle("hidden", expand[tab.id]);
+	
 	browser.sessions.setTabValue(parseInt(tab.id, 10), "expand", expand[tab.id]);
+	
+    // Save to local database
+    saveTreeToDatabase();
 	
 	if (!expand[tab.id] && sidebar.querySelector(".active").classList.contains("hidden"))
 		browser.tabs.update(parseInt(tab.id, 10), { active: true });
@@ -36,6 +67,9 @@ function tab_set_level(tab, lvl)
 		browser.sessions.setTabValue(parseInt(tab.id, 10), "level", level[tab.id]);
 		tab = tab.nextSibling;
 	} while (tab != null && level[tab.id] > old_level);
+
+    // Save to local database
+    saveTreeToDatabase();
 }
 
 function tab_show(tab)
@@ -92,7 +126,6 @@ function event_tab_click(event) {
     let tab_id = parseInt(event.currentTarget.id, 10);
 
     if (event.shiftKey && lastSelectedTabId !== null) {
-        // Multi-select range
         let tabs = Array.from(sidebar.children);
         let start = tabs.findIndex(t => parseInt(t.id, 10) === lastSelectedTabId);
         let end = tabs.findIndex(t => parseInt(t.id, 10) === tab_id);
@@ -104,7 +137,6 @@ function event_tab_click(event) {
             }
         }
     } else if (event.ctrlKey || event.metaKey) {
-        // Toggle selection
         event.currentTarget.classList.toggle("selected");
         if (selectedTabIds.has(tab_id)) {
             selectedTabIds.delete(tab_id);
@@ -113,7 +145,6 @@ function event_tab_click(event) {
         }
         lastSelectedTabId = tab_id;
     } else {
-        // Single select
         sidebar.querySelectorAll(".selected").forEach(t => t.classList.remove("selected"));
         selectedTabIds.clear();
         event.currentTarget.classList.add("selected");
@@ -121,7 +152,6 @@ function event_tab_click(event) {
         lastSelectedTabId = tab_id;
     }
 
-    // Existing logic for close, audio, favicon, etc...
     if (event.target.classList.contains("close")) {
 		let toClose = selectedTabIds.has(tab_id)
 			? Array.from(selectedTabIds)
@@ -140,13 +170,11 @@ function event_tab_click(event) {
 function event_tab_contextmenu(event)
 {
 	event.stopPropagation();
-	
 	let tab = event.currentTarget;
 	browser.menus.update("pin", { title: tab.classList.contains("pinned") ? "Unpin tab" : "Pin tab" });
 	browser.menus.overrideContext({ context: "tab", tabId: parseInt(tab.id, 10) });
 }
 
-// Helper to find all descendants of a given tab element in the tree style tab structure
 function getSubtreeElements(tabEl) {
     let elements = [tabEl];
     let parentLevel = level[tabEl.id];
@@ -164,12 +192,10 @@ function event_tab_dragstart(event) {
         ? Array.from(selectedTabIds)
         : [tab_id];
     
-    // Sort selected drag IDs by their physical order in the DOM
     let sidebarTabs = Array.from(sidebar.children);
     let initialDragEls = initialDragIds.map(id => $(id)).filter(el => el !== null)
         .sort((a, b) => sidebarTabs.indexOf(a) - sidebarTabs.indexOf(b));
 
-    // Compile full subtrees for all dragged tabs (combining parents and children)
     let allDragEls = [];
     let seenIds = new Set();
     for (let tabEl of initialDragEls) {
@@ -185,25 +211,19 @@ function event_tab_dragstart(event) {
 
     draggedTabIds = allDragEls.map(el => parseInt(el.id, 10));
     event.dataTransfer.setData("ids", JSON.stringify(draggedTabIds));
-
-	draggedTabIds = dragIds;
 }
 
 function event_tab_dragover(event)
 {
 	let tab = event.currentTarget;
-	
-	// If we are dragging tabs and the target itself is not one of the dragged tabs
 	if (draggedTabIds.length > 0 && !draggedTabIds.includes(parseInt(tab.id, 10)))
 	{
 		let pinned = tab.classList.contains("pinned");
-		// Check if all dragged tabs match the pinned status of the hover target
 		let pinnedMatch = draggedTabIds.every(id => $(id).classList.contains("pinned") === pinned);
 		
 		if (pinnedMatch)
 		{
 			event.preventDefault();
-			
 			let r = tab.getBoundingClientRect();
 			let x = event.clientX - r.x;
 			let y = event.clientY - r.y;
@@ -222,7 +242,6 @@ function event_tab_drop(event) {
     let tab = event.currentTarget;
     let position = tab.dataset.drop || "after";
 
-    // Grab the IDs from dataTransfer or fall back to the global tracked array
     let dragIds = [];
     try {
         dragIds = JSON.parse(event.dataTransfer.getData("ids") || "[]");
@@ -231,7 +250,6 @@ function event_tab_drop(event) {
         dragIds = draggedTabIds;
     }
 
-    // Helper function to gather a tab and all of its nested descendant elements
     function getBranchElements(tabEl) {
         let branch = [tabEl];
         let rootLevel = level[tabEl.id];
@@ -243,7 +261,6 @@ function event_tab_drop(event) {
         return branch;
     }
 
-    // Collect all dragged tabs and their sub-trees (branches)
     let draggedNodesSet = new Set();
     dragIds.forEach(id => {
         let el = $(id);
@@ -252,8 +269,6 @@ function event_tab_drop(event) {
         }
     });
 
-    // Convert back to an array and sort them by their current position in the DOM
-    // to preserve their original top-to-bottom layout sequence
     let sidebarChildren = Array.from(sidebar.children);
     let allDraggedNodes = Array.from(draggedNodesSet).sort(
         (a, b) => sidebarChildren.indexOf(a) - sidebarChildren.indexOf(b)
@@ -265,7 +280,6 @@ function event_tab_drop(event) {
         return;
     }
 
-    // Skip past hidden children of the drop target if we are dropping 'after' a collapsed tab
     let insertReference = tab;
     if (position === "after" && !expand[tab.id]) {
         while (insertReference.nextSibling != null && level[insertReference.nextSibling.id] > level[tab.id]) {
@@ -273,21 +287,16 @@ function event_tab_drop(event) {
         }
     }
 
-    // Calculate the new level for the main "root" being moved
     let targetLevel = level[tab.id] + (position === "inside" ? 1 : 0);
     targetLevel = Math.max(0, Math.min(10, targetLevel));
 
-    // Calculate the offset (delta) between where the root was and where it is going
     let rootNode = allDraggedNodes[0];
     let delta = targetLevel - level[rootNode.id];
 
-    // Process and move each element in the branch, maintaining their relative offsets
     allDraggedNodes.forEach(tabEl => {
-        // Shift this tab's level by the parent's delta
         let newLvl = Math.max(0, Math.min(10, level[tabEl.id] + delta));
         tab_set_level(tabEl, newLvl);
 
-        // Safely move it in the sidebar DOM
         if (tabEl.parentNode) {
             tabEl.parentNode.removeChild(tabEl);
         }
@@ -297,21 +306,17 @@ function event_tab_drop(event) {
             : insertReference.nextSibling;
             
         sidebar.insertBefore(tabEl, insertBeforeTarget);
-        
-        // Correct visibility rules and scroll into view
         tab_show(tabEl);
-
-        // Slide the insert marker down so the next sibling in the branch lands directly under it
         insertReference = tabEl;
     });
 
-    // Synchronize current visual sidebar order with browser session tabs
     Array.from(sidebar.children).forEach((tabEl, index) => {
         browser.tabs.move(parseInt(tabEl.id, 10), { index: index });
     });
 
     delete tab.dataset.drop;
-    draggedTabIds = []; // Clear global tracking state
+    draggedTabIds = [];
+    saveTreeToDatabase(); // Update Database
 }
 
 function event_tab_dragend(event) {
@@ -329,7 +334,7 @@ function getNextColor() {
 	return color;
 }
 
-function div_tab_insert(tab, lvl = 0, expanded = true, tab_after = null, created = false) // Everytime a new tab is created
+function div_tab_insert(tab, lvl = 0, expanded = true, tab_after = null, created = false)
 {
 	expand[tab.id] = expanded;
 	let prev = tab_after != null ? tab_after.previousSibling : sidebar.lastChild;
@@ -347,21 +352,15 @@ function div_tab_insert(tab, lvl = 0, expanded = true, tab_after = null, created
 	div.ondragleave = event_tab_dragleave;
 	div.ondragend = event_tab_dragend;
 
-	// Testing start
-	// After line 165
 	let container = tab.cookieStoreId || "";
 	let containerDiv = document.createElement("div");
 	containerDiv.className = "container-thing";
 	containerDiv.textContent = container;
 	div.appendChild(containerDiv);
-	// Testing end
-
 
 	if (String(container) != "firefox-default") {
-		console.log("container is not default, adding color");		
 		if (container_colors.findIndex(c => c.container === container) !== -1) {
 			let existingColor = container_colors.find(c => c.container === container).color;
-			console.log("existing color for container", container, "is", existingColor);
 			div.style.borderLeft = "4px solid " + existingColor;
 		}
 		else {
@@ -370,7 +369,6 @@ function div_tab_insert(tab, lvl = 0, expanded = true, tab_after = null, created
 			div.style.borderLeft = "4px solid " + newColor;
 		}
 	}
-
 
 	div.ondrop = event_tab_drop;
 	div.classList.add("tab", "level-" + level[tab.id]);
@@ -395,6 +393,7 @@ function handler_created(tab)
 	if (level[tab.id] == 0)
 		browser.sessions.removeTabValue(tab.id, "level");
 	browser.sessions.removeTabValue(tab.id, "expand");
+    saveTreeToDatabase();
 }
 
 function handler_removed(tab_id, info)
@@ -409,16 +408,15 @@ function handler_removed(tab_id, info)
 	delete level[tab_id];
 	delete expand[tab_id];
 
-	// If the closed tab was part of the multi-selection, 
-	// close all other selected tabs at the same time
 	if (selectedTabIds.has(tab_id)) {
 		selectedTabIds.delete(tab_id);
 		if (selectedTabIds.size > 0) {
 			let toClose = Array.from(selectedTabIds);
-			selectedTabIds.clear(); // Clear local state before triggering removal to prevent recursion
+			selectedTabIds.clear(); 
 			browser.tabs.remove(toClose);
 		}
 	}
+    saveTreeToDatabase();
 }
 
 function handler_attached(tab_id, info)
@@ -427,7 +425,10 @@ function handler_attached(tab_id, info)
 		return;
 	
 	handler_created({ id: tab_id, active: false, index: info.newPosition, windowId: window_id });
-	browser.tabs.get(tab_id).then(tab => { handler_updated(tab_id, tab, tab); });
+	browser.tabs.get(tab_id).then(tab => { 
+        handler_updated(tab_id, tab, tab); 
+        saveTreeToDatabase();
+    });
 }
 
 function handler_detached(tab_id, info)
@@ -443,6 +444,7 @@ function handler_moved(tab_id, info)
 	let tab = $(tab_id);
 	if (tab != sidebar.children[info.toIndex])
 		tab_move(tab, sidebar.children[info.toIndex + (info.fromIndex < info.toIndex)], "before");
+    saveTreeToDatabase();
 }
 
 function handler_activated(info)
@@ -475,15 +477,51 @@ function handler_updated(tab_id, info, tab)
 		tab_promote_first_child(div);
 	if ("title" in info)
 		div.children[1].textContent = div.children[1].title = tab.title;
+
+    // Track URL changes dynamically to prevent losing states if tabs redirect
+    if ("url" in info) {
+        saveTreeToDatabase();
+    }
 }
 
+// Initialization of Sidebar & Cold Restore matching
 browser.tabs.query({ currentWindow: true }).then(async tabs => {
-	let data = tabs.map(tab => [browser.sessions.getTabValue(tab.id, "level"),
-		browser.sessions.getTabValue(tab.id, "expand")]);
+    // 1. Fetch persistent database (Sidebery-style index fallback)
+    let persistentDB = [];
+    try {
+        let storage = await browser.storage.local.get("sidebery_style_db");
+        persistentDB = storage.sidebery_style_db || [];
+    } catch(e) {
+        console.error("Failed reading database during boot initialization.", e);
+    }
+
+	let data = tabs.map(tab => [
+        browser.sessions.getTabValue(tab.id, "level"),
+		browser.sessions.getTabValue(tab.id, "expand")
+    ]);
+	
 	let hidden = { 0: false };
 	for (let [i, tab] of tabs.entries())
 	{
-		let div = div_tab_insert(tab, await data[i][0], await data[i][1]);
+		let lvl = await data[i][0];
+		let exp = await data[i][1];
+
+        // COLD RESTART ALGORITHM:
+        // If sessions are wiped, map the tab using index matching and URL verification.
+        if (lvl === undefined || exp === undefined) {
+            // Find if there is a recorded state for this position or matching URL in our database
+            let matchingData = persistentDB.find(record => record.url === tab.url) || persistentDB[i];
+            if (matchingData) {
+                if (lvl === undefined) lvl = matchingData.level;
+                if (exp === undefined) exp = matchingData.expand;
+            }
+        }
+
+        // Failsafe fallbacks
+        if (lvl === undefined) lvl = 0;
+        if (exp === undefined) exp = true;
+
+		let div = div_tab_insert(tab, lvl, exp);
 		hidden[level[tab.id] + 1] = div.classList.toggle("hidden", hidden[level[tab.id]]) || !expand[tab.id];
 	}
 	
@@ -495,7 +533,7 @@ browser.tabs.query({ currentWindow: true }).then(async tabs => {
 	browser.tabs.onMoved.addListener(handler_moved);
 	browser.tabs.onActivated.addListener(handler_activated);
 	browser.tabs.onUpdated.addListener(handler_updated, { windowId: window_id,
-		properties: ["audible", "favIconUrl", "mutedInfo", "pinned", "status", "title"] });
+		properties: ["audible", "favIconUrl", "mutedInfo", "pinned", "status", "title", "url"] });
 	
 	let tab_active = (await browser.tabs.query({ currentWindow: true, active: true }))[0];
 	handler_updated(tab_active.id, tab_active, tab_active);
@@ -505,23 +543,8 @@ browser.tabs.query({ currentWindow: true }).then(async tabs => {
 		if (!expand[tab.id] && (tab.nextSibling == null || level[tab.id] >= level[tab.nextSibling.id]))
 			tab_set_expand(tab, true);
 
-    // Show notification about last session
-    try {
-        const result = await browser.storage.local.get(["sessionSaverTree", "sessionSaverTabCount"]);
-        const tree = result.sessionSaverTree || [];
-        const tabCount = tree.length;
-        let maxLevel = 0;
-        for (let node of tree) {
-            if (typeof node.level === 'number' && node.level > maxLevel) maxLevel = node.level;
-        }
-        if (tabCount > 0 && browser.notifications) {
-            browser.notifications.create({
-                "type": "basic",
-                "iconUrl": browser.runtime.getURL("icon.svg"),
-                "title": "Session Restored",
-                "message": `Restored ${tabCount} tabs. Max indent level: ${maxLevel}`
-            });
-        }
-    } catch (e) {}
+    // Initial database synchronization
+    saveTreeToDatabase();
 });
+
 document.oncontextmenu = event => { event.preventDefault(); };
