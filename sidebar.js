@@ -3,15 +3,6 @@ console.log("===\nrunning sidebar.js\n===");
 /**
  * PROFILE IDENTIFICATION
  * Firefox's built-in profiles (launched via `firefox -P ProfileName`, or the
- * newer profile switcher) each normally get their own isolated extension
- * storage - but to be 100% sure "work" and "personal" sessions never mix
- * (e.g. if storage is ever shared/synced, or the extension is loaded from a
- * common source across profiles), give each profile a distinct ID here.
- * Just edit this one line in each profile's copy of the script.
- */
-/**
- * PROFILE IDENTIFICATION
- * Firefox's built-in profiles (launched via `firefox -P ProfileName`, or the
  * newer profile switcher) each get their own isolated extension storage -
  * but relying on you hand-editing a constant in this file per profile is
  * fragile: if the extension is installed persistently (not reloaded as a
@@ -101,6 +92,19 @@ async function dbKey() {
 let $ = document.getElementById.bind(document);
 let window_id = null;
 let sidebar = $("tabs");
+const MAX_INDENT_LEVEL = 100; // deepest a tab can be nested. No limit imposed by
+                              // styling - indentation is set inline from JS below,
+                              // so raise this as high as you like.
+const INDENT_PX_PER_LEVEL = 16; // matches the old .level-N margin-left step in sidebar.css // orig value: 16
+
+// Applies the visual indent for a tab's level directly, instead of relying on a
+// fixed set of .level-N CSS classes (which would need one rule per possible depth).
+// CSS still needs to know root vs non-root for two unrelated rules (border-left,
+// drag-drop padding), so "level-0" is kept as a plain boolean class.
+function apply_tab_indent(div, lvl) {
+	div.style.marginLeft = lvl > 0 ? (INDENT_PX_PER_LEVEL * lvl) + "px" : "";
+	div.classList.toggle("level-0", lvl === 0);
+}
 let level = { };
 let expand = { };
 let container_colors = [{ }];
@@ -162,8 +166,8 @@ function tab_set_level(tab, lvl)
 	let old_level = level[tab.id];
 	do
 	{
-		let new_level = Math.max(0, Math.min(10, level[tab.id] + lvl - old_level));
-		tab.classList.replace("level-" + level[tab.id], "level-" + new_level);
+		let new_level = Math.max(0, Math.min(MAX_INDENT_LEVEL, level[tab.id] + lvl - old_level));
+		apply_tab_indent(tab, new_level);
 		level[tab.id] = new_level;
 		browser.sessions.setTabValue(parseInt(tab.id, 10), "level", level[tab.id]);
 		tab = tab.nextSibling;
@@ -214,7 +218,7 @@ function tab_move(tab_moved, tab_drop, position)
 	tab_promote_first_child(tab_moved);
 	if (tab_drop) {
 		let newLevel = level[tab_drop.id] + (position == "inside" ? 1 : 0);
-		newLevel = Math.max(0, Math.min(10, newLevel));
+		newLevel = Math.max(0, Math.min(MAX_INDENT_LEVEL, newLevel));
 		tab_set_level(tab_moved, newLevel);
 	} else {
 		tab_set_level(tab_moved, 0);
@@ -389,13 +393,13 @@ function event_tab_drop(event) {
     }
 
     let targetLevel = level[tab.id] + (position === "inside" ? 1 : 0);
-    targetLevel = Math.max(0, Math.min(10, targetLevel));
+    targetLevel = Math.max(0, Math.min(MAX_INDENT_LEVEL, targetLevel));
 
     let rootNode = allDraggedNodes[0];
     let delta = targetLevel - level[rootNode.id];
 
     allDraggedNodes.forEach(tabEl => {
-        let newLvl = Math.max(0, Math.min(10, level[tabEl.id] + delta));
+        let newLvl = Math.max(0, Math.min(MAX_INDENT_LEVEL, level[tabEl.id] + delta));
         tab_set_level(tabEl, newLvl);
 
         if (tabEl.parentNode) {
@@ -439,7 +443,7 @@ function div_tab_insert(tab, lvl = 0, expanded = true, tab_after = null, created
 {
 	expand[tab.id] = expanded;
 	let prev = tab_after != null ? tab_after.previousSibling : sidebar.lastChild;
-	level[tab.id] = Math.max(0, Math.min(10, lvl));
+	level[tab.id] = Math.max(0, Math.min(MAX_INDENT_LEVEL, lvl));
 	if (level[tab.id] != lvl || (created && level[tab.id] > 0))
 		browser.sessions.setTabValue(tab.id, "level", level[tab.id]);
 	
@@ -472,7 +476,8 @@ function div_tab_insert(tab, lvl = 0, expanded = true, tab_after = null, created
 	}
 
 	div.ondrop = event_tab_drop;
-	div.classList.add("tab", "level-" + level[tab.id]);
+	div.classList.add("tab");
+	apply_tab_indent(div, level[tab.id]);
 	if (tab.active) {
 		// Ensure only one tab is ever marked active, regardless of event ordering
 		sidebar.querySelectorAll(".active").forEach(t => t.classList.remove("active"));
@@ -491,7 +496,7 @@ function handler_created(tab)
 		return;
 	
 	let tab_after = sidebar.children[tab.index];
-	let lvl = (typeof level[tab.openerTabId] === 'number' ? Math.min(10, level[tab.openerTabId] + 1) : (tab_after ? level[tab_after.id] : 0));
+	let lvl = (typeof level[tab.openerTabId] === 'number' ? Math.min(MAX_INDENT_LEVEL, level[tab.openerTabId] + 1) : (tab_after ? level[tab_after.id] : 0));
 	let div = div_tab_insert(tab, lvl, true, tab_after, true);
 	tab_show(div);
 	

@@ -36,6 +36,19 @@ body
 	font-family: Arial, sans-serif;
 }
 
+@media (max-width: 299px) {
+	.tab:not(.pinned) {
+		width: 300px;
+		border-top-right-radius: 15px;
+		border-bottom-right-radius: 15px;
+		border-left: rgb(151, 151, 151) 0.1px solid;
+	}
+	.tab.pinned {
+		border-left: rgb(151, 151, 151) 0.1px solid;
+	}
+}
+
+
 .tab
 {
 	height: 23px;
@@ -124,11 +137,6 @@ body
 {
 	border-left: 1px solid var(--tab-border-color);
 }
-.level-1 { margin-left: 16px; }
-.level-2 { margin-left: 32px; }
-.level-3 { margin-left: 48px; }
-.level-4 { margin-left: 64px; }
-.level-5 { margin-left: 80px; }
 
 .tab > :not(.title)
 {
