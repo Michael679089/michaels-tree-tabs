@@ -1,5 +1,103 @@
 console.log("===\nrunning sidebar.js\n===");
 
+/**
+ * PROFILE IDENTIFICATION
+ * Firefox's built-in profiles (launched via `firefox -P ProfileName`, or the
+ * newer profile switcher) each normally get their own isolated extension
+ * storage - but to be 100% sure "work" and "personal" sessions never mix
+ * (e.g. if storage is ever shared/synced, or the extension is loaded from a
+ * common source across profiles), give each profile a distinct ID here.
+ * Just edit this one line in each profile's copy of the script.
+ */
+/**
+ * PROFILE IDENTIFICATION
+ * Firefox's built-in profiles (launched via `firefox -P ProfileName`, or the
+ * newer profile switcher) each get their own isolated extension storage -
+ * but relying on you hand-editing a constant in this file per profile is
+ * fragile: if the extension is installed persistently (not reloaded as a
+ * temporary add-on), Firefox keeps running whatever copy of this file it
+ * already loaded, and never picks up your edit.
+ *
+ * Instead, ask once at runtime which profile this is, and remember the
+ * answer in this profile's own storage.local - no file edits, no reloads
+ * needed ever again. This uses a small in-page prompt rather than
+ * window.prompt(), because window.prompt() is known to render broken or
+ * not at all inside Firefox sidebar panels.
+ */
+const PROFILE_ID_STORAGE_KEY = "extension_profile_id";
+let cachedProfileId = null;
+
+function askProfileIdInline() {
+    return new Promise(resolve => {
+        let overlay = document.createElement("div");
+        overlay.style.cssText = "position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.6);"
+            + "display:flex;align-items:center;justify-content:center;font-family:sans-serif;";
+
+        let box = document.createElement("div");
+        box.style.cssText = "background:#2a2a2e;color:#fff;padding:16px;border-radius:6px;"
+            + "width:85%;max-width:300px;box-shadow:0 2px 10px rgba(0,0,0,0.5);";
+
+        let label = document.createElement("div");
+        label.textContent = "Which Firefox profile is this? (e.g. \"work\" or \"personal\") - asked once per profile.";
+        label.style.cssText = "margin-bottom:8px;font-size:13px;";
+
+        let input = document.createElement("input");
+        input.type = "text";
+        input.value = "default";
+        input.style.cssText = "width:100%;box-sizing:border-box;padding:6px;margin-bottom:10px;"
+            + "border-radius:4px;border:1px solid #555;background:#1c1c1e;color:#fff;";
+
+        let button = document.createElement("button");
+        button.textContent = "Save";
+        button.style.cssText = "width:100%;padding:6px;border-radius:4px;border:none;"
+            + "background:#0a84ff;color:#fff;cursor:pointer;";
+
+        let submit = () => {
+            let value = input.value.trim() || "default";
+            document.body.removeChild(overlay);
+            resolve(value);
+        };
+        button.onclick = submit;
+        input.onkeydown = e => { if (e.key === "Enter") submit(); };
+
+        box.appendChild(label);
+        box.appendChild(input);
+        box.appendChild(button);
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+        input.focus();
+        input.select();
+    });
+}
+
+async function getProfileId() {
+    if (cachedProfileId)
+        return cachedProfileId;
+    try {
+        let stored = await browser.storage.local.get(PROFILE_ID_STORAGE_KEY);
+        if (stored[PROFILE_ID_STORAGE_KEY]) {
+            cachedProfileId = stored[PROFILE_ID_STORAGE_KEY];
+            return cachedProfileId;
+        }
+    } catch (e) {
+        console.error("Failed reading stored profile id:", e);
+    }
+
+    // First run in this profile - ask once, then remember forever
+    let id = await askProfileIdInline();
+    cachedProfileId = id;
+    try {
+        await browser.storage.local.set({ [PROFILE_ID_STORAGE_KEY]: id });
+    } catch (e) {
+        console.error("Failed saving profile id:", e);
+    }
+    return id;
+}
+
+async function dbKey() {
+    return "sidebery_style_db_" + (await getProfileId());
+}
+
 let $ = document.getElementById.bind(document);
 let window_id = null;
 let sidebar = $("tabs");
@@ -9,7 +107,9 @@ let container_colors = [{ }];
 let lastSelectedTabId = null;
 let selectedTabIds = new Set();
 let draggedTabIds = []; 
-let draggedElements = []; 
+let draggedElements = [];
+let awaitingActiveHandoff = false; // set when the currently-active tab is closed, so the
+                                    // tab that becomes active next also becomes "selected"
 
 /**
  * SIDEBERY-STYLE PERSISTENCE DATABASE
@@ -31,8 +131,9 @@ async function saveTreeToDatabase() {
             });
         }
         
-        // Write persistently to local storage
-        await browser.storage.local.set({ "sidebery_style_db": databaseSnapshot });
+        // Write persistently to local storage, scoped to this profile
+        let key = await dbKey();
+        await browser.storage.local.set({ [key]: databaseSnapshot });
     } catch (e) {
         console.error("Failed writing layout to local database:", e);
     }
@@ -372,7 +473,11 @@ function div_tab_insert(tab, lvl = 0, expanded = true, tab_after = null, created
 
 	div.ondrop = event_tab_drop;
 	div.classList.add("tab", "level-" + level[tab.id]);
-	div.classList.toggle("active", tab.active);
+	if (tab.active) {
+		// Ensure only one tab is ever marked active, regardless of event ordering
+		sidebar.querySelectorAll(".active").forEach(t => t.classList.remove("active"));
+		div.classList.add("active");
+	}
 	div.innerHTML = '<img class="favicon"><div class="title"></div><img class="audio"><div>▶</div><div class="close">❌</div>';
 	div.children[3].classList.toggle("hidden", expanded);
 	sidebar.insertBefore(div, tab_after);
@@ -390,6 +495,17 @@ function handler_created(tab)
 	let div = div_tab_insert(tab, lvl, true, tab_after, true);
 	tab_show(div);
 	
+	if (tab.active) {
+		// A new foreground tab becomes the selection anchor, same as a
+		// plain click would - so shift+click ranges start from it, and it
+		// gets the same "selected" highlight a manually-clicked tab gets.
+		sidebar.querySelectorAll(".selected").forEach(t => t.classList.remove("selected"));
+		selectedTabIds.clear();
+		div.classList.add("selected");
+		selectedTabIds.add(tab.id);
+		lastSelectedTabId = tab.id;
+	}
+	
 	if (level[tab.id] == 0)
 		browser.sessions.removeTabValue(tab.id, "level");
 	browser.sessions.removeTabValue(tab.id, "expand");
@@ -402,6 +518,8 @@ function handler_removed(tab_id, info)
 		return;
 	
 	let tab = $(tab_id);
+	if (tab.classList.contains("active"))
+		awaitingActiveHandoff = true;
 	tab_promote_first_child(tab, true);
 	sidebar.removeChild(tab);
 	
@@ -452,12 +570,23 @@ function handler_activated(info)
 	if (info.windowId != window_id)
 		return;
 	
-	if (info.previousTabId in level)
-		$(info.previousTabId).classList.remove("active");
+	sidebar.querySelectorAll(".active").forEach(t => t.classList.remove("active"));
 	
 	let tab = $(info.tabId);
 	tab.classList.add("active");
 	tab_show(tab);
+
+	if (awaitingActiveHandoff) {
+		// The tab we were focused on just got closed - this new tab is
+		// where focus landed, so treat it like a click: sole selection
+		// and the anchor for the next shift+click range.
+		awaitingActiveHandoff = false;
+		sidebar.querySelectorAll(".selected").forEach(t => t.classList.remove("selected"));
+		selectedTabIds.clear();
+		tab.classList.add("selected");
+		selectedTabIds.add(info.tabId);
+		lastSelectedTabId = info.tabId;
+	}
 }
 
 function handler_updated(tab_id, info, tab)
@@ -489,8 +618,9 @@ browser.tabs.query({ currentWindow: true }).then(async tabs => {
     // 1. Fetch persistent database (Sidebery-style index fallback)
     let persistentDB = [];
     try {
-        let storage = await browser.storage.local.get("sidebery_style_db");
-        persistentDB = storage.sidebery_style_db || [];
+        let key = await dbKey();
+        let storage = await browser.storage.local.get(key);
+        persistentDB = storage[key] || [];
     } catch(e) {
         console.error("Failed reading database during boot initialization.", e);
     }
@@ -538,6 +668,16 @@ browser.tabs.query({ currentWindow: true }).then(async tabs => {
 	let tab_active = (await browser.tabs.query({ currentWindow: true, active: true }))[0];
 	handler_updated(tab_active.id, tab_active, tab_active);
 	tab_show($(tab_active.id));
+
+	// Highlight whichever tab you're actually focused in when the sidebar loads
+	let activeDiv = $(tab_active.id);
+	if (activeDiv) {
+		sidebar.querySelectorAll(".selected").forEach(t => t.classList.remove("selected"));
+		selectedTabIds.clear();
+		activeDiv.classList.add("selected");
+		selectedTabIds.add(tab_active.id);
+		lastSelectedTabId = tab_active.id;
+	}
 	
 	for (let tab of sidebar.children)
 		if (!expand[tab.id] && (tab.nextSibling == null || level[tab.id] >= level[tab.nextSibling.id]))
