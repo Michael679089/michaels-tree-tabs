@@ -115,6 +115,16 @@ let draggedElements = [];
 let awaitingActiveHandoff = false; // set when the currently-active tab is closed, so the
                                     // tab that becomes active next also becomes "selected"
 
+const FOLDER_ICON_URL = "folder-icon.png";
+const FOLDER_TAB_PATH = "/ZenDivider/ZenDivider.html"; // divider/"folder" tabs load this
+                                                        // page regardless of the extension's
+                                                        // random moz-extension:// UUID, so
+                                                        // matching on the path is what's stable
+function is_folder_tab(url) {
+	return typeof url === "string" && url.includes(FOLDER_TAB_PATH);
+}
+
+
 /**
  * SIDEBERY-STYLE PERSISTENCE DATABASE
  * Saves the current window's URL-to-Tree mapping.
@@ -603,7 +613,9 @@ function handler_updated(tab_id, info, tab)
 	if ("audible" in info || "mutedInfo" in info)
 		div.children[2].src = tab.mutedInfo.muted ? "muted.svg" : tab.audible ? "audible.svg" : "";
 	if ("favIconUrl" in info || "status" in info)
-		if (tab.status != "loading" || !div.children[0].src.endsWith("loading.png"))
+        if (is_folder_tab(tab.url)) 
+            div.children[0].src = FOLDER_ICON_URL;
+		else if (tab.status != "loading" || !div.children[0].src.endsWith("loading.png"))
 			div.children[0].src = tab.status == "loading" ? "loading.png" : tab.favIconUrl || "";
 	if ("pinned" in info)
 		div.classList.toggle("pinned", tab.pinned);

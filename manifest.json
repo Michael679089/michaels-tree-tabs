@@ -18,6 +18,7 @@
   "permissions": [
     "tabs",
     "sessions",
+    "storage",
     "menus",
     "menus.overrideContext"
   ],
